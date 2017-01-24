@@ -31,6 +31,7 @@
 #include <arpa/inet.h>
 #include <linux/netdevice.h>
 #include <linux/if_pppox.h>
+#include <linux/types.h>
 #include <openssl/md5.h>
 
 #include "mtpd.h"
@@ -89,11 +90,11 @@ static char *messages[] = {
 #define ATTRIBUTE_HEADER_SIZE   6
 #define MAX_ATTRIBUTE_SIZE      1024
 
-static uint16_t local_tunnel;
-static uint16_t local_session;
+static __be16 local_tunnel;
+static __be16 local_session;
 static uint16_t local_sequence;
-static uint16_t remote_tunnel;
-static uint16_t remote_session;
+static __be16 remote_tunnel;
+static __be16 remote_session;
 static uint16_t remote_sequence;
 
 static uint16_t state;
@@ -321,7 +322,8 @@ static int l2tp_connect(char **arguments)
         local_tunnel = random();
     }
 
-    log_print(DEBUG, "Sending SCCRQ (local_tunnel = %d)", local_tunnel);
+    log_print(DEBUG, "Sending SCCRQ (local_tunnel = %u)",
+              (unsigned)ntohs(local_tunnel));
     state = SCCRQ;
     set_message(0, SCCRQ);
     add_attribute_u16(PROTOCOL_VERSION, htons(0x0100));
@@ -412,8 +414,8 @@ static void answer_challenge()
 static int l2tp_process()
 {
     uint16_t sequence = local_sequence;
-    uint16_t tunnel = 0;
-    uint16_t session = 0;
+    __be16 tunnel = 0;
+    __be16 session = 0;
 
     if (!recv_packet(&session)) {
         return acknowledged ? 0 : TIMEOUT_INTERVAL;
@@ -427,8 +429,8 @@ static int l2tp_process()
                 if (get_attribute_u16(ASSIGNED_TUNNEL, &tunnel) && tunnel &&
                         verify_challenge()) {
                     remote_tunnel = tunnel;
-                    log_print(DEBUG, "Received SCCRP (remote_tunnel = %d) -> "
-                            "Sending SCCCN", remote_tunnel);
+                    log_print(DEBUG, "Received SCCRP (remote_tunnel = %u) -> "
+                            "Sending SCCCN", (unsigned)ntohs(remote_tunnel));
                     state = SCCCN;
                     set_message(0, SCCCN);
                     answer_challenge();
@@ -445,8 +447,8 @@ static int l2tp_process()
             if (state == ICRQ && session == local_session) {
                 if (get_attribute_u16(ASSIGNED_SESSION, &session) && session) {
                     remote_session = session;
-                    log_print(DEBUG, "Received ICRP (remote_session = %d) -> "
-                            "Sending ICCN", remote_session);
+                    log_print(DEBUG, "Received ICRP (remote_session = %u) -> "
+                            "Sending ICCN", (unsigned)ntohs(remote_session));
                     state = ICCN;
                     set_message(remote_session, ICCN);
                     add_attribute_u32(CONNECT_SPEED, htonl(100000000));
@@ -467,8 +469,8 @@ static int l2tp_process()
 
         case CDN:
             if (session && session == local_session) {
-                log_print(DEBUG, "Received CDN (local_session = %d)",
-                        local_session);
+                log_print(DEBUG, "Received CDN (local_session = %u)",
+                        (unsigned)ntohs(local_session));
                 log_print(INFO, "Remote server hung up");
                 return -REMOTE_REQUESTED;
             }
@@ -484,7 +486,8 @@ static int l2tp_process()
                     local_session = random();
                 }
                 log_print(DEBUG, "Received %s -> Sending ICRQ (local_session = "
-                        "%d)", messages[incoming.message], local_session);
+                        "%u)", messages[incoming.message],
+                        (unsigned)ntohs(local_session));
                 log_print(INFO, "Tunnel established");
                 state = ICRQ;
                 set_message(0, ICRQ);
@@ -513,8 +516,9 @@ static int l2tp_process()
             /* Since we run pppd as a client, it does not makes sense to
              * accept ICRQ or OCRQ. Always send CDN with a proper error. */
             if (get_attribute_u16(ASSIGNED_SESSION, &session) && session) {
-                log_print(DEBUG, "Received %s (remote_session = %d) -> "
-                        "Sending CDN", messages[incoming.message], session);
+                log_print(DEBUG, "Received %s (remote_session = %u) -> "
+                        "Sending CDN", messages[incoming.message],
+                        (unsigned)ntohs(session));
                 set_message(session, CDN);
                 add_attribute_u32(RESULT_CODE, htonl(0x00020006));
                 add_attribute_u16(ASSIGNED_SESSION, 0);
