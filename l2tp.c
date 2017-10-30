@@ -14,11 +14,15 @@
  * limitations under the License.
  */
 
-/* A simple implementation of L2TP Access Concentrator (RFC 2661) which only
- * creates a single session. The following code only handles control packets.
- * Data packets are handled by PPPoLAC driver which can be found in Android
- * kernel tree. */
+/*
+ * Implementation of L2TP Access Concentrator (RFC 2661). The following code
+ * only handles control packets. Data packets are handled by kernel driver:
+ *  - PX_PROTO_OL2TP (upstream impl.), if it's enabled in kernel
+ *  - or PX_PROTO_OLAC (Android impl.), if upstream implementation is not
+ *    available / not enabled. It will be removed in new Android kernels.
+ */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -349,10 +353,40 @@ static int l2tp_connect(char **arguments)
     return TIMEOUT_INTERVAL;
 }
 
-static int create_pppox()
+/**
+ * Check if upstream kernel implementation is enabled.
+ *
+ * @return true if upstream L2TP is enabled in kernel and false otherwise
+ */
+static bool check_ol2tp(void)
 {
-    int pppox = socket(AF_PPPOX, SOCK_DGRAM, PX_PROTO_OLAC);
+    int fd = socket(AF_PPPOX, SOCK_DGRAM, PX_PROTO_OL2TP);
+
+    if (fd < 0) {
+        return false;
+    } else {
+        close(fd);
+        return true;
+    }
+}
+
+/**
+ * Create OLAC session.
+ *
+ * @deprecated It will be removed soon in favor of upstream OL2TP.
+ *
+ * @return PPPoX socket file descriptor
+ */
+static int create_pppox_olac(void)
+{
+    int pppox;
+
+    log_print(WARNING, "Using deprecated OLAC protocol. "
+                       "Its support will be removed soon. "
+                       "Please enable OL2TP support in your kernel");
+
     log_print(INFO, "Creating PPPoX socket");
+    pppox = socket(AF_PPPOX, SOCK_DGRAM, PX_PROTO_OLAC);
 
     if (pppox == -1) {
         log_print(FATAL, "Socket() %s", strerror(errno));
@@ -373,6 +407,69 @@ static int create_pppox()
     return pppox;
 }
 
+/**
+ * Create OL2TP tunnel and session.
+ *
+ * @param[out] tfd Will contain tunnel socket file descriptor
+ * @param[out] sfd Will contain session socket file descriptor
+ */
+static void create_pppox_ol2tp(int *tfd, int *sfd)
+{
+    int tunnel_fd;
+    int session_fd;
+    struct sockaddr_pppol2tp tunnel_sa;
+    struct sockaddr_pppol2tp session_sa;
+
+    log_print(INFO, "Creating PPPoX tunnel socket...");
+    tunnel_fd = socket(AF_PPPOX, SOCK_DGRAM, PX_PROTO_OL2TP);
+    if (tunnel_fd < 0) {
+        log_print(FATAL, "Tunnel socket(): %s", strerror(errno));
+        exit(SYSTEM_ERROR);
+    }
+
+    memset(&tunnel_sa, 0, sizeof(tunnel_sa));
+    tunnel_sa.sa_family = AF_PPPOX;
+    tunnel_sa.sa_protocol = PX_PROTO_OL2TP;
+    tunnel_sa.pppol2tp.fd = the_socket; /* UDP socket */
+    tunnel_sa.pppol2tp.s_tunnel = ntohs(local_tunnel);
+    tunnel_sa.pppol2tp.s_session = 0;   /* special case: mgmt socket */
+    tunnel_sa.pppol2tp.d_tunnel = ntohs(remote_tunnel);
+    tunnel_sa.pppol2tp.d_session = 0;   /* special case: mgmt socket */
+
+    log_print(INFO, "Connecting to tunnel socket...");
+    if (connect(tunnel_fd, (struct sockaddr *)&tunnel_sa,
+                sizeof(tunnel_sa))) {
+        log_print(FATAL, "Tunnel connect(): %s", strerror(errno));
+        exit(SYSTEM_ERROR);
+    }
+
+    log_print(INFO, "Creating PPPoX session socket...");
+    session_fd = socket(AF_PPPOX, SOCK_DGRAM, PX_PROTO_OL2TP);
+    if (session_fd < 0) {
+        log_print(FATAL, "Session socket(): %s", strerror(errno));
+        exit(SYSTEM_ERROR);
+    }
+
+    memset(&session_sa, 0, sizeof(session_sa));
+    session_sa.sa_family = AF_PPPOX;
+    session_sa.sa_protocol = PX_PROTO_OL2TP;
+    session_sa.pppol2tp.fd = the_socket;
+    session_sa.pppol2tp.s_tunnel = ntohs(local_tunnel);
+    session_sa.pppol2tp.s_session = ntohs(local_session);
+    session_sa.pppol2tp.d_tunnel = ntohs(remote_tunnel);
+    session_sa.pppol2tp.d_session = ntohs(remote_session);
+
+    log_print(INFO, "Connecting to session socket...");
+    if (connect(session_fd, (struct sockaddr *)&session_sa,
+                sizeof(session_sa))) {
+        log_print(FATAL, "Session connect(): %s", strerror(errno));
+        exit(SYSTEM_ERROR);
+    }
+
+    *tfd = tunnel_fd;
+    *sfd = session_fd;
+}
+
 static uint8_t *compute_response(uint8_t type, void *challenge, int size)
 {
     static uint8_t response[MD5_DIGEST_LENGTH];
@@ -385,18 +482,18 @@ static uint8_t *compute_response(uint8_t type, void *challenge, int size)
     return response;
 }
 
-static int verify_challenge()
+static bool verify_challenge()
 {
     if (secret) {
         uint8_t response[MD5_DIGEST_LENGTH];
         if (get_attribute_raw(CHALLENGE_RESPONSE, response, MD5_DIGEST_LENGTH)
                 != MD5_DIGEST_LENGTH) {
-            return 0;
+            return false;
         }
         return !memcmp(compute_response(SCCRP, challenge, CHALLENGE_SIZE),
                 response, MD5_DIGEST_LENGTH);
     }
-    return 1;
+    return true;
 }
 
 static void answer_challenge()
@@ -507,7 +604,17 @@ static int l2tp_process()
             if (state == ICCN) {
                 log_print(INFO, "Session established");
                 state = ACK;
-                start_pppd(create_pppox());
+
+                if (check_ol2tp()) {
+                    int tunnel_fd, session_fd;
+
+                    create_pppox_ol2tp(&tunnel_fd, &session_fd);
+                    start_pppd_ol2tp(tunnel_fd, session_fd,
+                                     ntohs(remote_tunnel),
+                                     ntohs(remote_session));
+                } else {
+                    start_pppd(create_pppox_olac());
+                }
             }
             return 0;
 
