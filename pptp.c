@@ -28,6 +28,7 @@
 #include <arpa/inet.h>
 #include <linux/netdevice.h>
 #include <linux/if_pppox.h>
+#include <linux/types.h>
 
 #include "mtpd.h"
 
@@ -72,8 +73,8 @@ static uint8_t lengths[] = {
 #define HEADER_SIZE             8
 #define MIN_MESSAGE_SIZE        10
 
-static uint16_t local;
-static uint16_t remote;
+static __be16 local;
+static __be16 remote;
 static uint16_t state;
 
 #define MAX_PACKET_LENGTH       220
@@ -207,8 +208,8 @@ static int recv_packet()
         if (incoming.header.type == CONTROL_MESSAGE) {
             return 1;
         }
-        log_print(DEBUG, "Ignored non-control message (type = %d)",
-                ntohs(incoming.header.type));
+        log_print(DEBUG, "Ignored non-control message (type = %u)",
+                (unsigned)ntohs(incoming.header.type));
     }
     return 0;
 }
@@ -284,7 +285,7 @@ static int pptp_process()
                         local = random();
                     }
                     log_print(DEBUG, "Received SCCRP -> Sending OCRQ "
-                            "(local = %d)", local);
+                            "(local = %u)", (unsigned)ntohs(local));
                     log_print(INFO, "Tunnel established");
                     state = OCRQ;
                     set_message(OCRQ);
@@ -309,7 +310,8 @@ static int pptp_process()
             if (state == OCRQ && incoming.ocrp.peer == local) {
                 if (ESTABLISHED(incoming.ocrp.result)) {
                     remote = incoming.ocrp.call;
-                    log_print(DEBUG, "Received OCRQ (remote = %d)", remote);
+                    log_print(DEBUG, "Received OCRQ (remote = %u)",
+                            (unsigned)ntohs(remote));
                     log_print(INFO, "Session established");
                     state = OCRP;
                     start_pppd(create_pppox());
@@ -333,7 +335,8 @@ static int pptp_process()
              * outgoing calls. However, some implementation only acts as PNS and
              * always uses CCRQ to clear a call, so here we still handle it. */
             if (state == OCRP && incoming.ccrq.call == remote) {
-                log_print(DEBUG, "Received CCRQ (remote = %d)", remote);
+                log_print(DEBUG, "Received CCRQ (remote = %u)",
+                        (unsigned)ntohs(remote));
                 log_print(INFO, "Remote server hung up");
                 return -REMOTE_REQUESTED;
             }
@@ -341,7 +344,8 @@ static int pptp_process()
 
         case CDN:
             if (state == OCRP && incoming.cdn.call == remote) {
-                log_print(DEBUG, "Received CDN (remote = %d)", remote);
+                log_print(DEBUG, "Received CDN (remote = %u)",
+                        (unsigned)ntohs(remote));
                 log_print(INFO, "Remote server hung up");
                 return -REMOTE_REQUESTED;
             }
@@ -361,8 +365,9 @@ static int pptp_process()
             return 0;
 
         case ICRQ:
-            log_print(DEBUG, "Received ICRQ (remote = %d) -> Sending ICRP "
-                    "with error", incoming.icrq.call);
+            log_print(DEBUG, "Received ICRQ (remote = %u, call = %u) -> "
+                    "Sending ICRP with error", (unsigned)ntohs(remote),
+                    (unsigned)ntohs(incoming.icrq.call));
             set_message(ICRP);
             outgoing.icrp.peer = incoming.icrq.call;
             outgoing.icrp.result = RESULT_ERROR;
@@ -370,8 +375,9 @@ static int pptp_process()
             return 0;
 
         case OCRQ:
-            log_print(DEBUG, "Received OCRQ (remote = %d) -> Sending OCRP "
-                    "with error", incoming.ocrq.call);
+            log_print(DEBUG, "Received OCRQ (remote = %u, call = %u) -> "
+                    "Sending OCRP with error", (unsigned)ntohs(remote),
+                    (unsigned)ntohs(incoming.ocrq.call));
             set_message(OCRP);
             outgoing.ocrp.peer = incoming.ocrq.call;
             outgoing.ocrp.result = RESULT_ERROR;
