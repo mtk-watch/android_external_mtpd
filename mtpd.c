@@ -418,3 +418,56 @@ ret:
     close(session_fd);
     close(tunnel_fd);
 }
+
+/**
+ * Start pppd daemon with pppopptp-android plugin.
+ *
+ * @param pptp_fd PPTP socket file descriptor
+ */
+void start_pppd_pptp(int pptp_fd)
+{
+    if (pppd_pid) {
+        log_print(WARNING, "Pppd is already started (pid = %d)", pppd_pid);
+        goto ret;
+    }
+
+    log_print(INFO, "Starting pppd (pptp_fd = %d)", pptp_fd);
+
+    pppd_pid = fork();
+    if (pppd_pid < 0) {
+        log_print(FATAL, "Fork() %s", strerror(errno));
+        exit(SYSTEM_ERROR);
+    }
+
+    if (!pppd_pid) {
+        char pptp_fd_str[FD_MAX_LEN + 1];
+
+        snprintf(pptp_fd_str, FD_MAX_LEN + 1, "%d", pptp_fd);
+
+        const char *pptp_args[] = {
+            "pppd",
+            "nodetach",
+            "plugin",
+            "pppopptp-android.so",
+            "pptp_socket",
+            pptp_fd_str,
+        };
+        const size_t args_len = ARRAY_SIZE(pptp_args) + pppd_argc + 1;
+        char *args[args_len];
+
+        /* Populate args[] from pptp_args[] and pppd_argv[] */
+        memcpy(args, pptp_args, sizeof(pptp_args));
+        memcpy(args + ARRAY_SIZE(pptp_args), pppd_argv,
+                sizeof(char *) * pppd_argc);
+        args[args_len - 1] = NULL;
+
+        execvp("pppd", args);
+        log_print(FATAL, "Exec() %s", strerror(errno));
+        exit(SYSTEM_ERROR); /* Pretending a fatal error in pppd. */
+    }
+
+    log_print(INFO, "Pppd started (pid = %d)", pppd_pid);
+
+ret:
+    close(pptp_fd);
+}
