@@ -354,19 +354,20 @@ static int l2tp_connect(char **arguments)
 }
 
 /**
- * Check if upstream kernel implementation is enabled.
+ * Check if upstream kernel implementation of L2TP should be used.
  *
- * @return true if upstream L2TP is enabled in kernel and false otherwise
+ * @return true If upstream L2TP should be used, which is the case if
+ *              the obsolete OLAC feature is not available.
  */
 static bool check_ol2tp(void)
 {
-    int fd = socket(AF_PPPOX, SOCK_DGRAM, PX_PROTO_OL2TP);
+    int fd = socket(AF_PPPOX, SOCK_DGRAM, PX_PROTO_OLAC);
 
     if (fd < 0) {
-        return false;
+        return true;
     } else {
         close(fd);
-        return true;
+        return false;
     }
 }
 

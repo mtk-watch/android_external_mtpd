@@ -237,19 +237,20 @@ static int pptp_connect(char **arguments)
 }
 
 /**
- * Check if upstream kernel implementation is enabled.
+ * Check if upstream kernel implementation of PPTP should be used.
  *
- * @return true if upstream PPTP is enabled in kernel and false otherwise
+ * @return true If upstream PPTP should be used, which is the case if
+ *              the obsolete OPNS feature is not available.
  */
 static bool check_pptp(void)
 {
-    int fd = socket(AF_PPPOX, SOCK_DGRAM, PX_PROTO_PPTP);
+    int fd = socket(AF_PPPOX, SOCK_DGRAM, PX_PROTO_OPNS);
 
     if (fd < 0) {
-        return false;
+        return true;
     } else {
         close(fd);
-        return true;
+        return false;
     }
 }
 
