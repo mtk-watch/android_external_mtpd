@@ -19,6 +19,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <errno.h>
+#include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/poll.h>
@@ -34,7 +35,6 @@
 #include <android/log.h>
 #include <cutils/sockets.h>
 #endif
-
 #include "mtpd.h"
 #include "NetdClient.h"
 
@@ -43,9 +43,9 @@
 #define TYPE_STRLEN_U(t)        ((((sizeof(t) * CHAR_BIT) * 1233) >> 12) + 1)
 /* Length of string with max file descriptor value */
 #define FD_MAX_LEN              TYPE_STRLEN_U(int)
-
+#define VPN_SERV_NAME 64
 int the_socket = -1;
-
+char vpnserver[VPN_SERV_NAME] = {0};
 extern struct protocol l2tp;
 extern struct protocol pptp;
 static struct protocol *protocols[] = {&l2tp, &pptp, NULL};
@@ -276,7 +276,7 @@ void create_socket(int family, int type, char *server, char *port)
     struct addrinfo *records;
     struct addrinfo *r;
     int error;
-
+    char * serv_ipadr = NULL;
     log_print(INFO, "Connecting to %s port %s via %s", server, port, interface);
 
     error = getaddrinfo(server, port, &hints, &records);
@@ -291,6 +291,9 @@ void create_socket(int family, int type, char *server, char *port)
         if (!setsockopt(s, SOL_SOCKET, SO_BINDTODEVICE, interface,
                 strlen(interface)) && !connect(s, r->ai_addr, r->ai_addrlen)) {
             the_socket = s;
+	    serv_ipadr = inet_ntoa( ((struct sockaddr_in *)r->ai_addr)->sin_addr);
+            strncpy(vpnserver,serv_ipadr,strlen(serv_ipadr));
+	    log_print(INFO, "transfer parameter---vpnserver: %s",vpnserver);
             break;
         }
         close(s);
@@ -452,15 +455,26 @@ void start_pppd_pptp(int pptp_fd)
             "pptp_socket",
             pptp_fd_str,
         };
-        const size_t args_len = ARRAY_SIZE(pptp_args) + pppd_argc + 1;
+        const size_t args_len = ARRAY_SIZE(pptp_args) + pppd_argc + 2 + 1;
         char *args[args_len];
-
+	char * vpnserv_args = malloc(VPN_SERV_NAME+strlen("PPTP_VPNSERV=")+1);
+	if(vpnserv_args) {
+		memset(vpnserv_args,0,VPN_SERV_NAME+strlen("PPTP_VPNSERV=")+1);
+        	strncpy(vpnserv_args,"PPTP_VPNSERV=",strlen("PPTP_VPNSERV="));
+		strncat(vpnserv_args,vpnserver,strlen(vpnserver));
+	}
+	else  {
+		log_print(INFO, "malloc vpnserver failed");
+		exit(SYSTEM_ERROR);
+	}
         /* Populate args[] from pptp_args[] and pppd_argv[] */
         memcpy(args, pptp_args, sizeof(pptp_args));
         memcpy(args + ARRAY_SIZE(pptp_args), pppd_argv,
                 sizeof(char *) * pppd_argc);
-        args[args_len - 1] = NULL;
 
+        args[args_len - 3] = "set";
+        args[args_len - 2] = vpnserv_args;
+        args[args_len - 1] = NULL;
         execvp("pppd", args);
         log_print(FATAL, "Exec() %s", strerror(errno));
         exit(SYSTEM_ERROR); /* Pretending a fatal error in pppd. */
